@@ -3,7 +3,6 @@ langchain==0.3.7
 langchain-anthropic
 langchain-openai
 langchain-community==0.3.7
-langchain-core==0.3.15
 tavily-python
 beautifulsoup4
 requests
