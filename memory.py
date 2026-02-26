@@ -1,71 +1,133 @@
 # memory.py
-import sqlite3
 import os
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+import sqlite3
+from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, AIMessage
 
-DB_PATH = "chat_memory.db"
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# ── DETECT WHICH DATABASE TO USE ──────────────────────────────────────
+# Locally: SQLite (simple file)
+# On Railway: PostgreSQL (persistent cloud database)
+USE_POSTGRES = DATABASE_URL is not None
+
+if USE_POSTGRES:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
 
 
+# ── CONNECTION HELPER ──────────────────────────────────────────────────
+def get_connection():
+    """Returns the right database connection based on environment"""
+    if USE_POSTGRES:
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        return sqlite3.connect("chat_memory.db")
+
+
+def get_cursor(conn):
+    """Returns the right cursor type"""
+    if USE_POSTGRES:
+        return conn.cursor(cursor_factory=RealDictCursor)
+    else:
+        return conn.cursor()
+
+
+# ── INIT ───────────────────────────────────────────────────────────────
 def init_db():
-    """
-    Creates the database and messages table if they don't exist yet.
-    Called once when the bot starts.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    conn = get_connection()
+    cursor = get_cursor(conn)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     TEXT NOT NULL,
-            role        TEXT NOT NULL,
-            content     TEXT NOT NULL,
-            timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    conn.commit()   # save changes
-    conn.close()    # always close connections when done
-
-
-def save_message(user_id: str, role: str, content: str):
-    """
-    Saves a single message to the database.
-    role is either 'human' or 'ai'
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "INSERT INTO messages (user_id, role, content) VALUES (?, ?, ?)",
-        (user_id, role, content)
-    )
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id        SERIAL PRIMARY KEY,
+                user_id   TEXT NOT NULL,
+                role      TEXT NOT NULL,
+                content   TEXT NOT NULL,
+                timestamp TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notes (
+                id        SERIAL PRIMARY KEY,
+                content   TEXT NOT NULL,
+                created   TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id   TEXT NOT NULL,
+                role      TEXT NOT NULL,
+                content   TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notes (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                content   TEXT NOT NULL,
+                created   DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
     conn.commit()
     conn.close()
 
 
-def load_history(user_id: str, limit: int = 20) -> list:
-    """
-    Loads the last N messages for a user.
-    Returns them as LangChain message objects ready to send to the LLM.
-    limit=20 means last 20 messages (10 exchanges) — enough context, not too expensive
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+# ── SAVE MESSAGE ───────────────────────────────────────────────────────
+def save_message(user_id: str, role: str, content: str):
+    conn = get_connection()
+    cursor = get_cursor(conn)
 
-    cursor.execute("""
-        SELECT role, content FROM messages
-        WHERE user_id = ?
-        ORDER BY timestamp ASC
-        LIMIT ?
-    """, (user_id, limit))
+    if USE_POSTGRES:
+        cursor.execute(
+            "INSERT INTO messages (user_id, role, content) VALUES (%s, %s, %s)",
+            (user_id, role, content)
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO messages (user_id, role, content) VALUES (?, ?, ?)",
+            (user_id, role, content)
+        )
+
+    conn.commit()
+    conn.close()
+
+
+# ── LOAD HISTORY ───────────────────────────────────────────────────────
+def load_history(user_id: str, limit: int = 20) -> list:
+    conn = get_connection()
+    cursor = get_cursor(conn)
+
+    if USE_POSTGRES:
+        cursor.execute("""
+            SELECT role, content FROM messages
+            WHERE user_id = %s
+            ORDER BY timestamp ASC
+            LIMIT %s
+        """, (user_id, limit))
+    else:
+        cursor.execute("""
+            SELECT role, content FROM messages
+            WHERE user_id = ?
+            ORDER BY timestamp ASC
+            LIMIT ?
+        """, (user_id, limit))
 
     rows = cursor.fetchall()
     conn.close()
 
     messages = []
-    for role, content in rows:
+    for row in rows:
+        # psycopg2 returns dicts, sqlite3 returns tuples — handle both
+        role = row["role"] if USE_POSTGRES else row[0]
+        content = row["content"] if USE_POSTGRES else row[1]
+
         if role == "human":
             messages.append(HumanMessage(content=content))
         elif role == "ai":
@@ -74,15 +136,16 @@ def load_history(user_id: str, limit: int = 20) -> list:
     return messages
 
 
+# ── CLEAR HISTORY ──────────────────────────────────────────────────────
 def clear_history(user_id: str):
-    """
-    Deletes all messages for a user.
-    Called when they use /tone to reset — fresh start.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    conn = get_connection()
+    cursor = get_cursor(conn)
 
-    cursor.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
+    if USE_POSTGRES:
+        cursor.execute("DELETE FROM messages WHERE user_id = %s", (user_id,))
+    else:
+        cursor.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
 
     conn.commit()
     conn.close()
+    
