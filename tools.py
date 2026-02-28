@@ -41,27 +41,28 @@ def search_web(query: str) -> str:
 @tool
 def save_note(note: str) -> str:
     """
-    Save a note or reminder for the user.
+    Save a note or reminder for the user to Apple Notes.
     Use this when the user asks to remember something, save something,
     or set a reminder. Input should be the note content to save.
     """
+    import requests
+    import os
+
+    webhook_url = os.getenv("MAKE_WEBHOOK_URL")
+
+    if not webhook_url:
+        return "Note saving is not configured."
+
     try:
-        conn = sqlite3.connect("chat_memory.db")
-        cursor = conn.cursor()
-
-        # Create notes table if it doesn't exist
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS notes (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                content   TEXT NOT NULL,
-                created   DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        cursor.execute("INSERT INTO notes (content) VALUES (?)", (note,))
-        conn.commit()
-        conn.close()
-        return f"Got it — I've saved that note: '{note}'"
+        response = requests.post(
+            webhook_url,
+            json={"note": note},
+            timeout=10
+        )
+        if response.status_code == 200:
+            return f"Got it — I've saved '{note}' to your Apple Notes 📝"
+        else:
+            return f"Failed to save note — webhook returned {response.status_code}"
     except Exception as e:
         return f"Failed to save note: {str(e)}"
 
