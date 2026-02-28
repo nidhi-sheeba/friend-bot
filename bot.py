@@ -6,19 +6,40 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 from agent import get_agent_response
 from memory import init_db, save_message, load_history, clear_history
-from voice import transcribe_voice  # NEW
+from voice import transcribe_voice
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 
+# ── HELPER: TONE KEYBOARD ──────────────────────────────────────────────
+def tone_keyboard():
+    """Returns the tone selection keyboard — reused in multiple places"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤗 Consoling", callback_data="tone_consoling")],
+        [InlineKeyboardButton("💪 Firm", callback_data="tone_firm")],
+        [InlineKeyboardButton("😄 As a Friend", callback_data="tone_friend")],
+        [InlineKeyboardButton("🧠 Objectively", callback_data="tone_objective")],
+        [InlineKeyboardButton("🛋️ Therapist", callback_data="tone_therapist")],
+    ])
+
+
+# ── HANDLER 1: /start ──────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    user_name = update.effective_user.first_name
+
     await update.message.reply_text(
-        "Hey! 👋 I'm your personal AI friend.\nSend me a message to get started."
+        f"Hey {user_name}! 👋 I'm your personal AI friend.\n\nHow would you like me to talk to you today?",
+        reply_markup=tone_keyboard()
     )
 
 
+# ── HANDLER 2: Text messages ───────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     user_name = update.effective_user.first_name
     user_message = update.message.text
     user_id = str(update.effective_user.id)
@@ -26,17 +47,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tone = context.user_data.get("tone")
 
     if not tone:
-        keyboard = [
-            [InlineKeyboardButton("🤗 Consoling", callback_data="tone_consoling")],
-            [InlineKeyboardButton("💪 Firm", callback_data="tone_firm")],
-            [InlineKeyboardButton("😄 As a Friend", callback_data="tone_friend")],
-            [InlineKeyboardButton("🧠 Objectively", callback_data="tone_objective")],
-            [InlineKeyboardButton("🛋️ Therapist", callback_data="tone_therapist")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             f"Hey {user_name}! 👋\n\nHow would you like me to talk to you today?",
-            reply_markup=reply_markup
+            reply_markup=tone_keyboard()
         )
     else:
         await context.bot.send_chat_action(
@@ -50,61 +63,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
 
-# ── NEW: VOICE MESSAGE HANDLER ─────────────────────────────────────────
+# ── HANDLER 3: Voice messages ──────────────────────────────────────────
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Runs when user sends a voice message.
-    Downloads it, transcribes it, then processes it like a normal text message.
-    """
+    if not update.message:
+        return
     user_name = update.effective_user.first_name
     user_id = str(update.effective_user.id)
     tone = context.user_data.get("tone")
 
-    # If they haven't picked a tone yet, ask them to first
     if not tone:
-        keyboard = [
-            [InlineKeyboardButton("🤗 Consoling", callback_data="tone_consoling")],
-            [InlineKeyboardButton("💪 Firm", callback_data="tone_firm")],
-            [InlineKeyboardButton("😄 As a Friend", callback_data="tone_friend")],
-            [InlineKeyboardButton("🧠 Objectively", callback_data="tone_objective")],
-            [InlineKeyboardButton("🛋️ Therapist", callback_data="tone_therapist")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             f"Hey {user_name}! 👋 Pick a tone first, then send your voice message.",
-            reply_markup=reply_markup
+            reply_markup=tone_keyboard()
         )
-        return  # stop here — don't process the voice yet
+        return
 
-    # Show typing indicator while we download + transcribe
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action="typing"
     )
 
-    # update.message.voice is the Telegram Voice object
-    # .get_file() downloads the metadata (not the audio yet)
-    # then transcribe_voice() handles the actual download + transcription
     voice = update.message.voice
     file = await context.bot.get_file(voice.file_id)
-
-    # Transcribe — this calls Whisper and returns the text
     transcribed_text = await transcribe_voice(file)
 
-    # Show the user what we heard — good for trust and debugging
     await update.message.reply_text(f"🎤 I heard: _{transcribed_text}_", parse_mode="Markdown")
 
-    # Now treat the transcribed text exactly like a typed message
     history = load_history(user_id)
     reply = get_agent_response(transcribed_text, tone, history)
 
-    # Save with a label so you know it came from voice
     save_message(user_id, "human", f"[voice] {transcribed_text}")
     save_message(user_id, "ai", reply)
 
     await update.message.reply_text(reply)
 
 
+# ── HANDLER 4: Tone button clicks ─────────────────────────────────────
 async def handle_tone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -123,13 +117,21 @@ async def handle_tone_selection(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(tone_messages[tone])
 
 
+# ── HANDLER 5: /tone command ───────────────────────────────────────────
 async def change_tone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     user_id = str(update.effective_user.id)
     context.user_data.pop("tone", None)
     clear_history(user_id)
-    await update.message.reply_text("Sure! Send me any message and pick a new tone 👇")
+
+    await update.message.reply_text(
+        "Sure! How would you like me to talk to you?",
+        reply_markup=tone_keyboard()
+    )
 
 
+# ── MAIN ───────────────────────────────────────────────────────────────
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
@@ -137,7 +139,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tone", change_tone))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))  # NEW
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_tone_selection))
 
     print("Bot is running... Press Ctrl+C to stop.")
@@ -146,3 +148,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
