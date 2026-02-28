@@ -41,30 +41,63 @@ def search_web(query: str) -> str:
 @tool
 def save_note(note: str) -> str:
     """
-    Save a note or reminder for the user to Apple Notes.
+    Save a note or reminder for the user to Notion.
     Use this when the user asks to remember something, save something,
     or set a reminder. Input should be the note content to save.
     """
-    import requests
     import os
+    from notion_client import Client
+    from datetime import datetime
 
-    webhook_url = os.getenv("MAKE_WEBHOOK_URL")
+    notion_key = os.getenv("NOTION_API_KEY")
+    database_id = os.getenv("NOTION_DATABASE_ID")
 
-    if not webhook_url:
-        return "Note saving is not configured."
+    if not notion_key or not database_id:
+        return "Notion is not configured. Please add NOTION_API_KEY and NOTION_DATABASE_ID."
 
     try:
-        response = requests.post(
-            webhook_url,
-            json={"note": note},
-            timeout=10
+        notion = Client(auth=notion_key)
+
+        # Create a title from the first line of the note
+        title = note.split("\n")[0][:100]  # first line, max 100 chars
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        notion.pages.create(
+            parent={"database_id": database_id},
+            properties={
+                "Name": {
+                    "title": [
+                        {
+                            "text": {
+                                "content": f"[{timestamp}] {title}"
+                            }
+                        }
+                    ]
+                }
+            },
+            # The full note goes in the page body
+            children=[
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [
+                            {
+                                "type": "text",
+                                "text": {
+                                    "content": note
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
         )
-        if response.status_code == 200:
-            return f"Got it — I've saved '{note}' to your Apple Notes 📝"
-        else:
-            return f"Failed to save note — webhook returned {response.status_code}"
+
+        return f"Got it — I've saved your note to Notion 📝"
+
     except Exception as e:
-        return f"Failed to save note: {str(e)}"
+        return f"Failed to save to Notion: {str(e)}"
 
 
 @tool
