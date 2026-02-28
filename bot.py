@@ -35,6 +35,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=tone_keyboard()
     )
 
+async def clear_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    user_id = str(update.effective_user.id)
+    clear_history(user_id)
+    await update.message.reply_text("🗑️ Memory cleared! I've forgotten our conversation history.")
 
 # ── HANDLER 2: Text messages ───────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,6 +144,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tone", change_tone))
+    app.add_handler(CommandHandler("clear", clear_memory))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_tone_selection))
@@ -148,4 +155,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
