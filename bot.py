@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 from agent import get_agent_response
+from image_handler import interpret_image
 from memory import init_db, save_message, load_history, clear_history
 from voice import transcribe_voice
 
@@ -103,7 +104,44 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply)
 
+# ── HANDLER: Photo messages ────────────────────────────────────────────
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    user_id = str(update.effective_user.id)
+    tone = context.user_data.get("tone")
 
+    if not tone:
+        await update.message.reply_text(
+            "Pick a tone first, then send your image!",
+            reply_markup=tone_keyboard()
+        )
+        return
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action="typing"
+    )
+
+    # Get the highest resolution version of the photo
+    # Telegram sends multiple sizes — [-1] is always the largest
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+
+    # Caption is optional text the user sends with the image
+    caption = update.message.caption or ""
+
+    # Get tone prompt for personality
+    from llm import TONE_PROMPTS
+    tone_prompt = TONE_PROMPTS.get(tone, TONE_PROMPTS["tone_friend"])
+
+    reply = await interpret_image(file, caption, tone_prompt)
+
+    # Save to memory so the bot remembers the image was discussed
+    save_message(user_id, "human", f"[image] {caption}" if caption else "[image sent]")
+    save_message(user_id, "ai", reply)
+
+    await update.message.reply_text(reply)
 # ── HANDLER 4: Tone button clicks ─────────────────────────────────────
 async def handle_tone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -144,6 +182,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tone", change_tone))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(CommandHandler("clear", clear_memory))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
